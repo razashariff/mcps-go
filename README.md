@@ -33,6 +33,36 @@ msg := json.RawMessage(`{"method":"tools/call","params":{"name":"search_entities
 signed, _ := mcps.SignMessage(msg, kp, passport)
 ```
 
+### Persistent keys (stable across reboots)
+
+```go
+// First boot: generate and save to disk
+kp, _ := mcps.GenerateAndSaveKeyPair("watchman.key", "watchman.pub")
+
+// Subsequent boots: load from disk
+kp, _ = mcps.LoadKeyPair("watchman.key", "watchman.pub")
+
+// Or load from environment variables (Docker, K8s secrets)
+kp, _ = mcps.LoadKeyPairFromEnv("MCPS_PRIVATE_KEY", "MCPS_PUBLIC_KEY")
+```
+
+### HSM / KMS support (pluggable Signer interface)
+
+```go
+// Implement the Signer interface for your HSM/KMS:
+type Signer interface {
+    Sign(hash []byte) (r, s *big.Int, err error)
+    PublicKey() *ecdsa.PublicKey
+}
+
+// Use with any backend:
+signed, _ := mcps.SignMessageWithSigner(msg, myHSMSigner, passport)
+
+// Built-in local signer:
+signer := mcps.NewLocalSigner(kp)
+signed, _ = mcps.SignMessageWithSigner(msg, signer, passport)
+```
+
 ### Verify a message (server side)
 
 ```go
@@ -71,8 +101,10 @@ if err == mcps.ErrToolIntegrity {
 - Canonical JSON (RFC 8785 JCS) for deterministic serialisation
 - Nonce-based replay protection with configurable time windows
 - Tool definition hash-pinning (detects tool poisoning attacks)
-- Agent passport verification with trust levels (L0-L4)
-- PEM key encoding/decoding
+- Agent passport signing and verification with trust levels (L0-L4)
+- Persistent keys -- stable across reboots (PEM file or env var)
+- Pluggable Signer interface for HSM, KMS, PKCS#11, or any external backend
+- PEM key encoding/decoding (EC PRIVATE KEY and PKCS8)
 - Zero external dependencies -- pure Go stdlib
 - FIPS-compatible algorithms (P-256, SHA-256)
 

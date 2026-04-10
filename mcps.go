@@ -27,6 +27,7 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -114,6 +115,194 @@ func GenerateKeyPair() (*KeyPair, error) {
 	return &KeyPair{
 		PrivateKey: privateKey,
 		PublicKey:  &privateKey.PublicKey,
+	}, nil
+}
+
+// GenerateAndSaveKeyPair creates a new key pair and saves it to PEM files
+func GenerateAndSaveKeyPair(privPath, pubPath string) (*KeyPair, error) {
+	kp, err := GenerateKeyPair()
+	if err != nil {
+		return nil, err
+	}
+	if err := SaveKeyPair(kp, privPath, pubPath); err != nil {
+		return nil, err
+	}
+	return kp, nil
+}
+
+// SaveKeyPair writes a key pair to PEM files
+func SaveKeyPair(kp *KeyPair, privPath, pubPath string) error {
+	privDER, err := x509.MarshalECPrivateKey(kp.PrivateKey)
+	if err != nil {
+		return fmt.Errorf("failed to marshal private key: %w", err)
+	}
+	privPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privDER})
+	if err := os.WriteFile(privPath, privPEM, 0600); err != nil {
+		return fmt.Errorf("failed to write private key: %w", err)
+	}
+
+	pubPEMStr, err := PublicKeyToPEM(kp.PublicKey)
+	if err != nil {
+		return fmt.Errorf("failed to encode public key: %w", err)
+	}
+	if err := os.WriteFile(pubPath, []byte(pubPEMStr), 0644); err != nil {
+		return fmt.Errorf("failed to write public key: %w", err)
+	}
+
+	return nil
+}
+
+// LoadKeyPair loads an ECDSA key pair from PEM files
+func LoadKeyPair(privPath, pubPath string) (*KeyPair, error) {
+	privPEM, err := os.ReadFile(privPath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read private key: %w", err)
+	}
+
+	block, _ := pem.Decode(privPEM)
+	if block == nil {
+		return nil, errors.New("failed to decode private key PEM")
+	}
+
+	var privateKey *ecdsa.PrivateKey
+
+	switch block.Type {
+	case "EC PRIVATE KEY":
+		privateKey, err = x509.ParseECPrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse EC private key: %w", err)
+		}
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse PKCS8 private key: %w", err)
+		}
+		var ok bool
+		privateKey, ok = key.(*ecdsa.PrivateKey)
+		if !ok {
+			return nil, errors.New("PKCS8 key is not ECDSA")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported PEM type: %s", block.Type)
+	}
+
+	return &KeyPair{
+		PrivateKey: privateKey,
+		PublicKey:  &privateKey.PublicKey,
+	}, nil
+}
+
+// LoadKeyPairFromEnv loads an ECDSA key pair from PEM-encoded environment variables
+func LoadKeyPairFromEnv(privEnv, pubEnv string) (*KeyPair, error) {
+	privPEM := os.Getenv(privEnv)
+	if privPEM == "" {
+		return nil, fmt.Errorf("environment variable %s is empty", privEnv)
+	}
+
+	block, _ := pem.Decode([]byte(privPEM))
+	if block == nil {
+		return nil, fmt.Errorf("failed to decode PEM from %s", privEnv)
+	}
+
+	var privateKey *ecdsa.PrivateKey
+	var err error
+
+	switch block.Type {
+	case "EC PRIVATE KEY":
+		privateKey, err = x509.ParseECPrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse EC private key from %s: %w", privEnv, err)
+		}
+	case "PRIVATE KEY":
+		key, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse PKCS8 private key from %s: %w", privEnv, err)
+		}
+		var ok bool
+		privateKey, ok = key.(*ecdsa.PrivateKey)
+		if !ok {
+			return nil, errors.New("PKCS8 key is not ECDSA")
+		}
+	default:
+		return nil, fmt.Errorf("unsupported PEM type: %s", block.Type)
+	}
+
+	return &KeyPair{
+		PrivateKey: privateKey,
+		PublicKey:  &privateKey.PublicKey,
+	}, nil
+}
+
+// Signer is an interface for pluggable signing backends (HSM, KMS, etc.)
+type Signer interface {
+	// Sign signs a hash and returns the r,s values
+	Sign(hash []byte) (r, s *big.Int, err error)
+	// PublicKey returns the public key for verification
+	PublicKey() *ecdsa.PublicKey
+}
+
+// LocalSigner implements Signer using a local ECDSA private key
+type LocalSigner struct {
+	keyPair *KeyPair
+}
+
+// NewLocalSigner creates a signer from a local key pair
+func NewLocalSigner(kp *KeyPair) *LocalSigner {
+	return &LocalSigner{keyPair: kp}
+}
+
+// Sign signs a hash using the local private key
+func (s *LocalSigner) Sign(hash []byte) (r, ss *big.Int, err error) {
+	return ecdsa.Sign(rand.Reader, s.keyPair.PrivateKey, hash)
+}
+
+// PublicKey returns the signer's public key
+func (s *LocalSigner) PublicKey() *ecdsa.PublicKey {
+	return s.keyPair.PublicKey
+}
+
+// SignMessageWithSigner signs an MCP message using a pluggable Signer interface
+// This enables HSM, KMS, PKCS#11, or any external signing backend
+func SignMessageWithSigner(message json.RawMessage, signer Signer, passport *Passport) (*SignedMessage, error) {
+	nonce, err := GenerateNonce()
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate nonce: %w", err)
+	}
+
+	timestamp := time.Now().Unix()
+
+	var msgObj interface{}
+	if err := json.Unmarshal(message, &msgObj); err != nil {
+		return nil, fmt.Errorf("failed to parse message: %w", err)
+	}
+
+	payload := map[string]interface{}{
+		"message":   msgObj,
+		"nonce":     nonce,
+		"timestamp": timestamp,
+		"signer":    passport.ID,
+	}
+
+	canonical, err := CanonicalJSON(payload)
+	if err != nil {
+		return nil, fmt.Errorf("failed to canonicalise: %w", err)
+	}
+
+	hash := sha256.Sum256(canonical)
+	r, s, err := signer.Sign(hash[:])
+	if err != nil {
+		return nil, fmt.Errorf("failed to sign: %w", err)
+	}
+
+	signature := fmt.Sprintf("%064x%064x", r, s)
+
+	return &SignedMessage{
+		MCPSVersion: Version,
+		PassportID:  passport.ID,
+		Nonce:       nonce,
+		Timestamp:   timestamp,
+		Signature:   signature,
+		Message:     message,
 	}, nil
 }
 

@@ -4,7 +4,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
+	"crypto/x509"
 	"encoding/json"
+	"encoding/pem"
+	"os"
 	"testing"
 	"time"
 )
@@ -32,6 +36,270 @@ func TestGenerateKeyPairUniqueness(t *testing.T) {
 	kp2, _ := GenerateKeyPair()
 	if kp1.PrivateKey.D.Cmp(kp2.PrivateKey.D) == 0 {
 		t.Fatal("two generated key pairs should not be identical")
+	}
+}
+
+// --- Key Persistence ---
+
+func TestSaveAndLoadKeyPair(t *testing.T) {
+	kp, _ := GenerateKeyPair()
+
+	privPath := t.TempDir() + "/test.key"
+	pubPath := t.TempDir() + "/test.pub"
+
+	err := SaveKeyPair(kp, privPath, pubPath)
+	if err != nil {
+		t.Fatalf("SaveKeyPair failed: %v", err)
+	}
+
+	loaded, err := LoadKeyPair(privPath, pubPath)
+	if err != nil {
+		t.Fatalf("LoadKeyPair failed: %v", err)
+	}
+
+	if !kp.PublicKey.Equal(loaded.PublicKey) {
+		t.Fatal("loaded public key should match original")
+	}
+	if kp.PrivateKey.D.Cmp(loaded.PrivateKey.D) != 0 {
+		t.Fatal("loaded private key should match original")
+	}
+}
+
+func TestGenerateAndSaveKeyPair(t *testing.T) {
+	privPath := t.TempDir() + "/gen.key"
+	pubPath := t.TempDir() + "/gen.pub"
+
+	kp, err := GenerateAndSaveKeyPair(privPath, pubPath)
+	if err != nil {
+		t.Fatalf("GenerateAndSaveKeyPair failed: %v", err)
+	}
+
+	// Verify files exist and are loadable
+	loaded, err := LoadKeyPair(privPath, pubPath)
+	if err != nil {
+		t.Fatalf("LoadKeyPair after generate failed: %v", err)
+	}
+
+	if !kp.PublicKey.Equal(loaded.PublicKey) {
+		t.Fatal("loaded key should match generated key")
+	}
+}
+
+func TestLoadKeyPairStableAcrossReboots(t *testing.T) {
+	// Simulate: generate once, load twice -- keys must be identical
+	privPath := t.TempDir() + "/stable.key"
+	pubPath := t.TempDir() + "/stable.pub"
+
+	kp, _ := GenerateAndSaveKeyPair(privPath, pubPath)
+
+	load1, _ := LoadKeyPair(privPath, pubPath)
+	load2, _ := LoadKeyPair(privPath, pubPath)
+
+	if !kp.PublicKey.Equal(load1.PublicKey) || !kp.PublicKey.Equal(load2.PublicKey) {
+		t.Fatal("key should be stable across multiple loads")
+	}
+	if load1.PrivateKey.D.Cmp(load2.PrivateKey.D) != 0 {
+		t.Fatal("private key should be identical across loads")
+	}
+}
+
+func TestLoadKeyPairSignVerifyRoundTrip(t *testing.T) {
+	// Generate, save, load, sign with loaded key, verify
+	privPath := t.TempDir() + "/rt.key"
+	pubPath := t.TempDir() + "/rt.pub"
+
+	original, _ := GenerateAndSaveKeyPair(privPath, pubPath)
+	loaded, _ := LoadKeyPair(privPath, pubPath)
+
+	passport := &Passport{ID: "persist-agent", TrustLevel: TrustVerified, IssuedAt: time.Now().Unix()}
+	msg := json.RawMessage(`{"method":"tools/call","params":{"name":"search_entities"}}`)
+
+	// Sign with loaded key
+	signed, err := SignMessage(msg, loaded, passport)
+	if err != nil {
+		t.Fatalf("sign with loaded key failed: %v", err)
+	}
+
+	// Verify with original public key
+	err = VerifyMessage(signed, original.PublicKey)
+	if err != nil {
+		t.Fatalf("verify with original key failed: %v", err)
+	}
+
+	// Verify with loaded public key
+	err = VerifyMessage(signed, loaded.PublicKey)
+	if err != nil {
+		t.Fatalf("verify with loaded key failed: %v", err)
+	}
+}
+
+func TestLoadKeyPairFromEnv(t *testing.T) {
+	kp, _ := GenerateKeyPair()
+
+	privDER, _ := x509.MarshalECPrivateKey(kp.PrivateKey)
+	privPEM := string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: privDER}))
+	pubPEM, _ := PublicKeyToPEM(kp.PublicKey)
+
+	t.Setenv("TEST_MCPS_PRIV", privPEM)
+	t.Setenv("TEST_MCPS_PUB", pubPEM)
+
+	loaded, err := LoadKeyPairFromEnv("TEST_MCPS_PRIV", "TEST_MCPS_PUB")
+	if err != nil {
+		t.Fatalf("LoadKeyPairFromEnv failed: %v", err)
+	}
+
+	if !kp.PublicKey.Equal(loaded.PublicKey) {
+		t.Fatal("loaded key should match original")
+	}
+}
+
+func TestLoadKeyPairFromEnvEmpty(t *testing.T) {
+	t.Setenv("EMPTY_KEY", "")
+	_, err := LoadKeyPairFromEnv("EMPTY_KEY", "UNUSED")
+	if err == nil {
+		t.Fatal("should fail on empty env var")
+	}
+}
+
+func TestLoadKeyPairBadPath(t *testing.T) {
+	_, err := LoadKeyPair("/nonexistent/path.key", "/nonexistent/path.pub")
+	if err == nil {
+		t.Fatal("should fail on nonexistent path")
+	}
+}
+
+func TestLoadKeyPairBadPEM(t *testing.T) {
+	privPath := t.TempDir() + "/bad.key"
+	os.WriteFile(privPath, []byte("not a pem file"), 0600)
+
+	_, err := LoadKeyPair(privPath, "unused")
+	if err == nil {
+		t.Fatal("should fail on bad PEM")
+	}
+}
+
+func TestSaveKeyPairPermissions(t *testing.T) {
+	kp, _ := GenerateKeyPair()
+	privPath := t.TempDir() + "/perm.key"
+	pubPath := t.TempDir() + "/perm.pub"
+
+	SaveKeyPair(kp, privPath, pubPath)
+
+	// Private key should be 0600
+	info, _ := os.Stat(privPath)
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("private key should be 0600, got %o", info.Mode().Perm())
+	}
+}
+
+// --- Signer Interface ---
+
+func TestLocalSigner(t *testing.T) {
+	kp, _ := GenerateKeyPair()
+	signer := NewLocalSigner(kp)
+
+	if !signer.PublicKey().Equal(kp.PublicKey) {
+		t.Fatal("signer public key should match key pair")
+	}
+
+	hash := sha256.Sum256([]byte("test"))
+	r, s, err := signer.Sign(hash[:])
+	if err != nil {
+		t.Fatalf("LocalSigner.Sign failed: %v", err)
+	}
+	if r == nil || s == nil {
+		t.Fatal("signature components should not be nil")
+	}
+
+	if !ecdsa.Verify(kp.PublicKey, hash[:], r, s) {
+		t.Fatal("signature should verify with original key")
+	}
+}
+
+func TestSignMessageWithSigner(t *testing.T) {
+	kp, _ := GenerateKeyPair()
+	signer := NewLocalSigner(kp)
+	passport := &Passport{ID: "signer-agent", TrustLevel: TrustVerified, IssuedAt: time.Now().Unix()}
+	msg := json.RawMessage(`{"method":"tools/call","params":{"name":"search_entities"}}`)
+
+	signed, err := SignMessageWithSigner(msg, signer, passport)
+	if err != nil {
+		t.Fatalf("SignMessageWithSigner failed: %v", err)
+	}
+
+	// Verify with the signer's public key
+	err = VerifyMessage(signed, signer.PublicKey())
+	if err != nil {
+		t.Fatalf("VerifyMessage after SignMessageWithSigner failed: %v", err)
+	}
+}
+
+func TestSignMessageWithSignerMatchesSignMessage(t *testing.T) {
+	// Both signing paths should produce verifiable signatures
+	kp, _ := GenerateKeyPair()
+	signer := NewLocalSigner(kp)
+	passport := &Passport{ID: "compat-agent", TrustLevel: TrustVerified, IssuedAt: time.Now().Unix()}
+	msg := json.RawMessage(`{"method":"tools/call"}`)
+
+	signed1, _ := SignMessage(msg, kp, passport)
+	signed2, _ := SignMessageWithSigner(msg, signer, passport)
+
+	// Both should verify with same key
+	if err := VerifyMessage(signed1, kp.PublicKey); err != nil {
+		t.Fatalf("SignMessage result should verify: %v", err)
+	}
+	if err := VerifyMessage(signed2, kp.PublicKey); err != nil {
+		t.Fatalf("SignMessageWithSigner result should verify: %v", err)
+	}
+}
+
+// --- Watchman HSM Integration Flow ---
+
+func TestWatchmanHSMFlow(t *testing.T) {
+	// Simulate Watchman with persistent keys:
+	// 1. First boot: generate and save keys
+	// 2. Reboot: load keys from disk
+	// 3. Sign screening results with loaded keys
+	// 4. Verify with public key
+
+	keyDir := t.TempDir()
+	privPath := keyDir + "/watchman.key"
+	pubPath := keyDir + "/watchman.pub"
+
+	// First boot -- generate and save
+	kp, _ := GenerateAndSaveKeyPair(privPath, pubPath)
+	passport := &Passport{
+		ID:         "watchman-mcp-001",
+		Subject:    "watchman",
+		TrustLevel: TrustAudited,
+		IssuedAt:   time.Now().Unix(),
+		ExpiresAt:  time.Now().Add(24 * time.Hour).Unix(),
+		Issuer:     "moov-io",
+	}
+
+	// Sign a screening result
+	result := json.RawMessage(`{"entities":[{"name":"SBERBANK","match":0.95,"source":"OFAC"}]}`)
+	signed1, _ := SignMessage(result, kp, passport)
+
+	// "Reboot" -- load keys from disk
+	loadedKP, _ := LoadKeyPair(privPath, pubPath)
+
+	// Sign another result with loaded keys
+	result2 := json.RawMessage(`{"entities":[{"name":"GAZPROM","match":0.88,"source":"HMT"}]}`)
+	signed2, _ := SignMessage(result2, loadedKP, passport)
+
+	// Verify both with the public key (could be distributed to clients)
+	pubKey := loadedKP.PublicKey
+	if err := VerifyMessage(signed1, pubKey); err != nil {
+		t.Fatalf("first boot signature should verify: %v", err)
+	}
+	if err := VerifyMessage(signed2, pubKey); err != nil {
+		t.Fatalf("reboot signature should verify: %v", err)
+	}
+
+	// Cross-verify: original key verifies reboot signature
+	if err := VerifyMessage(signed2, kp.PublicKey); err != nil {
+		t.Fatalf("cross-verify should pass (same key): %v", err)
 	}
 }
 
