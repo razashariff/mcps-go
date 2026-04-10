@@ -487,6 +487,179 @@ func TestPEMToPublicKeyWrongType(t *testing.T) {
 	}
 }
 
+// --- Passport Signature ---
+
+func TestSignAndVerifyPassport(t *testing.T) {
+	issuerKP, _ := GenerateKeyPair()
+	agentKP, _ := GenerateKeyPair()
+	agentPubPEM, _ := PublicKeyToPEM(agentKP.PublicKey)
+
+	passport := &Passport{
+		ID:           "agent-001",
+		Subject:      "payment-bot",
+		Version:      Version,
+		PublicKeyPEM: agentPubPEM,
+		TrustLevel:   TrustVerified,
+		Capabilities: []string{"search_entities", "tools/call"},
+		IssuedAt:     time.Now().Unix(),
+		ExpiresAt:    time.Now().Add(1 * time.Hour).Unix(),
+		Issuer:       "agentsign.dev",
+	}
+
+	err := SignPassport(passport, issuerKP)
+	if err != nil {
+		t.Fatalf("SignPassport failed: %v", err)
+	}
+	if passport.Signature == "" {
+		t.Fatal("passport signature should not be empty after signing")
+	}
+	if len(passport.Signature) != 128 {
+		t.Fatalf("expected 128 hex char signature, got %d", len(passport.Signature))
+	}
+
+	err = VerifyPassportSignature(passport, issuerKP.PublicKey)
+	if err != nil {
+		t.Fatalf("VerifyPassportSignature failed: %v", err)
+	}
+}
+
+func TestVerifyPassportSignatureWrongKey(t *testing.T) {
+	issuerKP, _ := GenerateKeyPair()
+	wrongKP, _ := GenerateKeyPair()
+
+	passport := &Passport{
+		ID:         "agent-001",
+		TrustLevel: TrustVerified,
+		IssuedAt:   time.Now().Unix(),
+		Issuer:     "agentsign.dev",
+	}
+
+	SignPassport(passport, issuerKP)
+
+	err := VerifyPassportSignature(passport, wrongKP.PublicKey)
+	if err != ErrInvalidSignature {
+		t.Fatalf("expected ErrInvalidSignature with wrong key, got %v", err)
+	}
+}
+
+func TestVerifyPassportSignatureTampered(t *testing.T) {
+	issuerKP, _ := GenerateKeyPair()
+
+	passport := &Passport{
+		ID:         "agent-001",
+		TrustLevel: TrustVerified,
+		IssuedAt:   time.Now().Unix(),
+		Issuer:     "agentsign.dev",
+	}
+
+	SignPassport(passport, issuerKP)
+
+	// Tamper with trust level after signing
+	passport.TrustLevel = TrustAudited
+
+	err := VerifyPassportSignature(passport, issuerKP.PublicKey)
+	if err != ErrInvalidSignature {
+		t.Fatalf("expected ErrInvalidSignature for tampered passport, got %v", err)
+	}
+}
+
+func TestVerifyPassportSignatureUnsigned(t *testing.T) {
+	kp, _ := GenerateKeyPair()
+
+	passport := &Passport{
+		ID:         "agent-001",
+		TrustLevel: TrustVerified,
+		IssuedAt:   time.Now().Unix(),
+	}
+
+	err := VerifyPassportSignature(passport, kp.PublicKey)
+	if err != ErrInvalidSignature {
+		t.Fatalf("expected ErrInvalidSignature for unsigned passport, got %v", err)
+	}
+}
+
+func TestVerifyPassportFull(t *testing.T) {
+	issuerKP, _ := GenerateKeyPair()
+
+	passport := &Passport{
+		ID:         "agent-001",
+		TrustLevel: TrustVerified,
+		IssuedAt:   time.Now().Unix(),
+		ExpiresAt:  time.Now().Add(1 * time.Hour).Unix(),
+		Issuer:     "agentsign.dev",
+	}
+
+	SignPassport(passport, issuerKP)
+
+	// Full verification: signature + expiry + trust level
+	err := VerifyPassportFull(passport, issuerKP.PublicKey, TrustIdentified)
+	if err != nil {
+		t.Fatalf("VerifyPassportFull should pass: %v", err)
+	}
+
+	// Full verification with too-high trust requirement
+	err = VerifyPassportFull(passport, issuerKP.PublicKey, TrustAudited)
+	if err != ErrInsufficientTrust {
+		t.Fatalf("expected ErrInsufficientTrust, got %v", err)
+	}
+}
+
+func TestVerifyPassportFullExpired(t *testing.T) {
+	issuerKP, _ := GenerateKeyPair()
+
+	passport := &Passport{
+		ID:         "agent-001",
+		TrustLevel: TrustAudited,
+		IssuedAt:   time.Now().Add(-2 * time.Hour).Unix(),
+		ExpiresAt:  time.Now().Add(-1 * time.Hour).Unix(),
+		Issuer:     "agentsign.dev",
+	}
+
+	SignPassport(passport, issuerKP)
+
+	err := VerifyPassportFull(passport, issuerKP.PublicKey, TrustIdentified)
+	// Signature is valid but passport is expired
+	if err != ErrPassportExpired {
+		t.Fatalf("expected ErrPassportExpired, got %v", err)
+	}
+}
+
+func TestSignPassportDeterministic(t *testing.T) {
+	issuerKP, _ := GenerateKeyPair()
+
+	passport := &Passport{
+		ID:         "agent-001",
+		TrustLevel: TrustVerified,
+		IssuedAt:   1712700000,
+		ExpiresAt:  1712703600,
+		Issuer:     "test",
+	}
+
+	SignPassport(passport, issuerKP)
+	sig1 := passport.Signature
+
+	// Re-sign should produce different signature (ECDSA is non-deterministic)
+	// but both should verify
+	SignPassport(passport, issuerKP)
+	sig2 := passport.Signature
+
+	if sig1 == sig2 {
+		// ECDSA with random k should produce different sigs
+		// (extremely unlikely to be equal, but not impossible)
+		t.Log("warning: two signatures are identical (astronomically unlikely)")
+	}
+
+	// Both should verify
+	passport.Signature = sig1
+	if err := VerifyPassportSignature(passport, issuerKP.PublicKey); err != nil {
+		t.Fatalf("sig1 should verify: %v", err)
+	}
+	passport.Signature = sig2
+	if err := VerifyPassportSignature(passport, issuerKP.PublicKey); err != nil {
+		t.Fatalf("sig2 should verify: %v", err)
+	}
+}
+
 // --- Integration: Full Watchman-style Flow ---
 
 func TestWatchmanIntegrationFlow(t *testing.T) {

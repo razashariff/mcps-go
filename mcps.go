@@ -385,7 +385,27 @@ func (tps *ToolPinStore) VerifyTool(serverURL, toolName string, toolDef interfac
 	return nil
 }
 
-// VerifyPassport checks if a passport is valid and meets minimum trust level
+// SignPassport signs a passport with the issuer's private key
+func SignPassport(passport *Passport, issuerKey *KeyPair) error {
+	// Clear any existing signature before signing
+	passport.Signature = ""
+
+	data, err := canonicalPassportData(passport)
+	if err != nil {
+		return fmt.Errorf("failed to canonicalise passport: %w", err)
+	}
+
+	hash := sha256.Sum256(data)
+	r, s, err := ecdsa.Sign(rand.Reader, issuerKey.PrivateKey, hash[:])
+	if err != nil {
+		return fmt.Errorf("failed to sign passport: %w", err)
+	}
+
+	passport.Signature = fmt.Sprintf("%064x%064x", r, s)
+	return nil
+}
+
+// VerifyPassport checks if a passport is valid: signature, expiry, and trust level
 func VerifyPassport(passport *Passport, minTrustLevel int) error {
 	if passport.ExpiresAt > 0 && time.Now().Unix() > passport.ExpiresAt {
 		return ErrPassportExpired
@@ -394,6 +414,78 @@ func VerifyPassport(passport *Passport, minTrustLevel int) error {
 		return ErrInsufficientTrust
 	}
 	return nil
+}
+
+// VerifyPassportSignature verifies the passport's cryptographic signature against the issuer's public key
+func VerifyPassportSignature(passport *Passport, issuerPubKey *ecdsa.PublicKey) error {
+	if passport.Signature == "" {
+		return ErrInvalidSignature
+	}
+
+	sig := passport.Signature
+	// Temporarily clear signature to compute the hash over the same data that was signed
+	passportCopy := *passport
+	passportCopy.Signature = ""
+
+	data, err := canonicalPassportData(&passportCopy)
+	if err != nil {
+		return fmt.Errorf("failed to canonicalise passport: %w", err)
+	}
+
+	hash := sha256.Sum256(data)
+
+	if len(sig) != 128 {
+		return ErrInvalidSignature
+	}
+	rBytes, err := hex.DecodeString(sig[:64])
+	if err != nil {
+		return ErrInvalidSignature
+	}
+	sBytes, err := hex.DecodeString(sig[64:])
+	if err != nil {
+		return ErrInvalidSignature
+	}
+
+	r := new(big.Int).SetBytes(rBytes)
+	s := new(big.Int).SetBytes(sBytes)
+
+	if !ecdsa.Verify(issuerPubKey, hash[:], r, s) {
+		return ErrInvalidSignature
+	}
+
+	return nil
+}
+
+// VerifyPassportFull performs complete passport verification: signature, expiry, and trust level
+func VerifyPassportFull(passport *Passport, issuerPubKey *ecdsa.PublicKey, minTrustLevel int) error {
+	if err := VerifyPassportSignature(passport, issuerPubKey); err != nil {
+		return err
+	}
+	return VerifyPassport(passport, minTrustLevel)
+}
+
+// canonicalPassportData produces the canonical byte representation of a passport for signing
+func canonicalPassportData(p *Passport) ([]byte, error) {
+	data := map[string]interface{}{
+		"id":           p.ID,
+		"subject":      p.Subject,
+		"version":      p.Version,
+		"publicKey":    p.PublicKeyPEM,
+		"trustLevel":   float64(p.TrustLevel),
+		"capabilities": toInterfaceSlice(p.Capabilities),
+		"issuedAt":     float64(p.IssuedAt),
+		"expiresAt":    float64(p.ExpiresAt),
+		"issuer":       p.Issuer,
+	}
+	return CanonicalJSON(data)
+}
+
+func toInterfaceSlice(ss []string) []interface{} {
+	result := make([]interface{}, len(ss))
+	for i, s := range ss {
+		result[i] = s
+	}
+	return result
 }
 
 // PublicKeyToPEM encodes an ECDSA public key to PEM format

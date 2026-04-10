@@ -261,12 +261,17 @@ func (m *ELIDAMiddleware) VerifyIncomingPassport(headers http.Header) error {
 	}
 
 	// For L2+ verification, call AgentSign API
-	// This is where the passport issuance dependency lives
 	if m.config.MinTrustLevel >= TrustVerified && m.config.AgentSignURL != "" {
-		// TODO: Call agentsign.dev/api/verify-passport with passportID
-		// AgentSign returns the passport details including trust level
-		// For now, accept any passport as L1
-		log.Printf("[MCPS] Passport %s accepted as L1 (AgentSign verification pending)", passportID)
+		verified, err := m.verifyPassportViaAgentSign(passportID)
+		if err != nil {
+			log.Printf("[MCPS] AgentSign verification failed for %s: %v", passportID, err)
+			return ErrInsufficientTrust
+		}
+		if verified.TrustLevel < m.config.MinTrustLevel {
+			return ErrInsufficientTrust
+		}
+		log.Printf("[MCPS] Passport %s verified via AgentSign (L%d)", passportID, verified.TrustLevel)
+		return nil
 	}
 
 	return nil
@@ -285,4 +290,40 @@ func (m *ELIDAMiddleware) Stats() map[string]interface{} {
 		"pin_tools":       m.config.PinTools,
 		"agentsign_url":   m.config.AgentSignURL,
 	}
+}
+
+// agentSignResponse represents the response from AgentSign passport verification
+type agentSignResponse struct {
+	Valid      bool   `json:"valid"`
+	TrustLevel int    `json:"trust_level"`
+	AgentID    string `json:"agent_id"`
+	Issuer     string `json:"issuer"`
+	ExpiresAt  int64  `json:"expires_at"`
+}
+
+// verifyPassportViaAgentSign calls the AgentSign API to verify a passport
+func (m *ELIDAMiddleware) verifyPassportViaAgentSign(passportID string) (*agentSignResponse, error) {
+	url := fmt.Sprintf("%s/api/verify-passport?id=%s", m.config.AgentSignURL, passportID)
+
+	client := &http.Client{Timeout: 5 * time.Second}
+	resp, err := client.Get(url)
+	if err != nil {
+		return nil, fmt.Errorf("AgentSign request failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("AgentSign returned status %d", resp.StatusCode)
+	}
+
+	var result agentSignResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, fmt.Errorf("failed to decode AgentSign response: %w", err)
+	}
+
+	if !result.Valid {
+		return nil, fmt.Errorf("passport %s is not valid", passportID)
+	}
+
+	return &result, nil
 }
