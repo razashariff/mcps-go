@@ -73,7 +73,6 @@ if err == mcps.ErrToolIntegrity {
 - Tool definition hash-pinning (detects tool poisoning attacks)
 - Agent passport verification with trust levels (L0-L4)
 - PEM key encoding/decoding
-- ELIDA proxy middleware (optional)
 - Zero external dependencies -- pure Go stdlib
 - FIPS-compatible algorithms (P-256, SHA-256)
 
@@ -107,6 +106,6 @@ if err == mcps.ErrToolIntegrity {
 
 ## License
 
-BSL-1.1 (Business Source License 1.1). See [LICENSE](LICENSE).
+Apache-2.0. See [LICENSE](LICENSE).
 
 Copyright (c) 2026 CyberSecAI Ltd.

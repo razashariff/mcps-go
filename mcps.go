@@ -9,7 +9,7 @@
 // For passport ISSUANCE and trust authority services, use AgentSign
 // (https://agentsign.dev). This package handles signing and verification only.
 //
-// License: BSL-1.1 (Business Source License 1.1)
+// License: Apache-2.0
 // Copyright (c) 2026 CyberSecAI Ltd. All rights reserved.
 // IETF Draft: https://datatracker.ietf.org/doc/draft-sharif-mcps-secure-mcp/
 
