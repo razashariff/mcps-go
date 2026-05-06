@@ -3,15 +3,20 @@ Business Source License 1.1
 License text copyright (c) 2017 MariaDB Corporation Ab, All Rights Reserved.
 "Business Source License" is a trademark of MariaDB Corporation Ab.
 
-Parameters
-
 Licensor:             CyberSecAI Ltd
-Licensed Work:        The Licensed Work is (c) 2026 CyberSecAI Ltd.
-Change Date:          2030-04-30
+Licensed Work:        mcps-go
+                      The Licensed Work is (c) 2026 CyberSecAI Ltd.
+Additional Use Grant: You may use the Licensed Work for non-production,
+                      evaluation, and research purposes free of charge.
+                      Production use requires a commercial licence from
+                      CyberSecAI Ltd. Contact: contact@agentsign.dev
+Change Date:          2030-05-06
 Change License:       Apache License, Version 2.0
 
 For information about alternative licensing arrangements, contact:
-contact@agentsign.dev
+CyberSecAI Ltd | contact@agentsign.dev | https://cybersecai.co.uk
+
+-----------------------------------------------------------------------------
 
 Terms
 
@@ -53,4 +58,10 @@ TO THE EXTENT PERMITTED BY APPLICABLE LAW, THE LICENSED WORK IS PROVIDED ON
 AN "AS IS" BASIS. LICENSOR HEREBY DISCLAIMS ALL WARRANTIES AND CONDITIONS,
 EXPRESS OR IMPLIED, INCLUDING (WITHOUT LIMITATION) WARRANTIES OF
 MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, NON-INFRINGEMENT, AND
-TITLE.
+TITLE. LICENSOR SHALL NOT BE LIABLE FOR ANY DAMAGES OF ANY KIND.
+
+-----------------------------------------------------------------------------
+
+(c) 2026 CyberSecAI Ltd. All rights reserved.
+Patent Pending: GB2610372.1, GB2610349.9 and others.
+contact@agentsign.dev | https://cybersecai.co.uk
