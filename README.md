@@ -138,6 +138,18 @@ if err == mcps.ErrToolIntegrity {
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+**Business Source License 1.1** (BSL 1.1). See [LICENSE](LICENSE).
 
-Copyright (c) 2026 CyberSecAI Ltd.
+- **Free** for non-production, evaluation, research, and development use.
+- **Production use requires a commercial licence from CyberSecAI Ltd.**
+  Production includes any service-of-others, paid product, or
+  customer-facing system that embeds mcps-go.
+- Change Date: 6 May 2030 -- converts automatically to Apache License 2.0.
+
+Full terms, definitions, and commercial pricing: see
+[LICENSING.md](LICENSING.md) or visit
+[cybersecai.co.uk/licensing](https://cybersecai.co.uk/licensing).
+
+Commercial enquiries: **contact@agentsign.dev**
+
+Copyright (c) 2026 CyberSecAI Ltd. Patent Pending: GB2610372.1, GB2610349.9 and others.
